@@ -257,7 +257,7 @@ export interface IrrigationEfficiency {
   optimalWaterUse: number;
   wastePercentage: number;
   recommendations: string[];
-  score: "A" | "B" | | "C" | "D" | "F";
+  score: "A" | "B" | "C" | "D" | "F";
 }
 
 export interface WeatherData {
