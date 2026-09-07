@@ -1,0 +1,1300 @@
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["multiSchema", "postgresqlExtensions"]
+  binaryTargets   = ["native", "rhel-openssl-1.0.x"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  extensions = [pgcrypto, pg_trgm, postgis]
+
+  schemas = ["public", "farm", "market", "analytics", "audit"]
+}
+
+// ═══════════════════════════════════════════════════════════════
+// ENUMS
+// ═══════════════════════════════════════════════════════════════
+
+enum UserRole {
+  SUPER_ADMIN
+  PLATFORM_ADMIN
+  FARM_OWNER
+  FARM_MANAGER
+  FARM_WORKER
+  AGRONOMIST
+  BUYER
+  VENDOR
+  ANALYST
+  VIEWER
+}
+
+enum FarmStatus {
+  ACTIVE
+  INACTIVE
+  PENDING_VERIFICATION
+  SUSPENDED
+  ARCHIVED
+}
+
+enum CropStatus {
+  PLANNED
+  SEEDING
+  GERMINATING
+  GROWING
+  FLOWERING
+  FRUITING
+  MATURING
+  READY_FOR_HARVEST
+  HARVESTED
+  FAILED
+  DISEASED
+}
+
+enum IrrigationType {
+  DRIP
+  SPRINKLER
+  FLOOD
+  CENTER_PIVOT
+  SUBSURFACE
+  MANUAL
+  SMART_AUTOMATED
+}
+
+enum SoilType {
+  SANDY
+  SILTY
+  CLAY
+  LOAMY
+  PEATY
+  CHALKY
+  SALINE
+  ROCKY
+}
+
+enum PestSeverity {
+  LOW
+  MODERATE
+  HIGH
+  CRITICAL
+  SEVERE
+}
+
+enum EquipmentStatus {
+  AVAILABLE
+  IN_USE
+  MAINTENANCE
+  REPAIR_NEEDED
+  OUT_OF_SERVICE
+  RETIRED
+}
+
+enum MarketStatus {
+  ACTIVE
+  INACTIVE
+  SOLD_OUT
+  PRICE_UPDATING
+  DELISTED
+}
+
+enum OrderStatus {
+  PENDING
+  CONFIRMED
+  PROCESSING
+  SHIPPED
+  IN_TRANSIT
+  DELIVERED
+  COMPLETED
+  CANCELLED
+  REFUNDED
+  DISPUTED
+}
+
+enum ContractStatus {
+  DRAFT
+  PENDING_REVIEW
+  ACTIVE
+  FULFILLED
+  BREACHED
+  TERMINATED
+  EXPIRED
+}
+
+enum NotificationType {
+  WEATHER_ALERT
+  PEST_ALERT
+  IRRIGATION_REMINDER
+  HARVEST_SCHEDULE
+  MARKET_PRICE_CHANGE
+  ORDER_UPDATE
+  MAINTENANCE_REMINDER
+  SYSTEM_ALERT
+  PAYMENT_RECEIVED
+  CONTRACT_UPDATE
+}
+
+enum Season {
+  SPRING
+  SUMMER
+  AUTUMN
+  WINTER
+}
+
+enum GrowthStage {
+  DORMANT
+  EMERGENCE
+  VEGETATIVE
+  REPRODUCTIVE
+  RIPENESS
+  SENESCENCE
+}
+
+enum SoilMoistureLevel {
+  DRY
+  LOW
+  ADEQUATE
+  OPTIMAL
+  HIGH
+  WATERLOGGED
+}
+
+enum WeatherCondition {
+  CLEAR
+  PARTLY_CLOUDY
+  CLOUDY
+  RAINY
+  HEAVY_RAIN
+  THUNDERSTORM
+  SNOWY
+  FOGGY
+  WINDY
+  HOT
+  COLD
+  FROST
+}
+
+// ═══════════════════════════════════════════════════════════════
+// USER & AUTH
+// ═══════════════════════════════════════════════════════════════
+
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  emailVerified DateTime?
+  name          String?
+  firstName     String?
+  lastName      String?
+  phone         String?
+  avatarUrl     String?
+  passwordHash  String?
+  role          UserRole  @default(FARM_OWNER)
+  isActive      Boolean   @default(true)
+  lastLoginAt   DateTime?
+  timezone      String    @default("UTC")
+  locale        String    @default("en")
+
+  accounts      Account[]
+  sessions      Session[]
+  farms         FarmMember[]
+  ownedFarms    Farm[]
+  orders        Order[]
+  buyerProfile  Buyer?
+  notifications Notification[]
+  auditLogs     AuditLog[]
+  documents     Document[]
+  apiKeys       ApiKey[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([email])
+  @@index([role])
+  @@schema("public")
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@schema("public")
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@schema("public")
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+  @@schema("public")
+}
+
+model ApiKey {
+  id        String   @id @default(cuid())
+  userId    String
+  name      String
+  key       String   @unique
+  lastUsed  DateTime?
+  expiresAt DateTime?
+  isActive  Boolean  @default(true)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([key])
+  @@schema("public")
+}
+
+// ═══════════════════════════════════════════════════════════════
+// FARM MANAGEMENT
+// ═══════════════════════════════════════════════════════════════
+
+model Farm {
+  id          String    @id @default(cuid())
+  ownerId     String
+  name        String
+  description String?   @db.Text
+  status      FarmStatus @default(ACTIVE)
+  areaHa      Decimal   @db.Decimal(10, 4) // hectares
+  latitude    Decimal?  @db.Decimal(10, 7)
+  longitude   Decimal?  @db.Decimal(10, 7)
+  address     String?
+  city        String?
+  state       String?
+  country     String    @default("US")
+  postalCode  String?
+  timezone    String    @default("UTC")
+  logoUrl     String?
+  metadata    Json?
+
+  owner       User          @relation(fields: [ownerId], references: [id])
+  members     FarmMember[]
+  fields      FarmField[]
+  crops       Crop[]
+  soilSamples SoilSample[]
+  equipment   Equipment[]
+  weathers    Weather[]
+  financials  Financial[]
+  contracts   Contract[]
+  yieldForecasts YieldForecast[]
+  satelliteImages SatelliteImage[]
+  droneFlights    DroneFlight[]
+  sensors     Sensor[]
+  images      FarmImage[]
+  documents   Document[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([ownerId])
+  @@index([status])
+  @@schema("farm")
+}
+
+model FarmMember {
+  id      String   @id @default(cuid())
+  farmId  String
+  userId  String
+  role    UserRole @default(FARM_WORKER)
+  joinedAt DateTime @default(now())
+
+  farm Farm @relation(fields: [farmId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([farmId, userId])
+  @@index([farmId])
+  @@index([userId])
+  @@schema("farm")
+}
+
+model FarmImage {
+  id        String  @id @default(cuid())
+  farmId    String
+  url       String
+  alt       String?
+  category  String?
+  metadata  Json?
+
+  farm Farm @relation(fields: [farmId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  @@schema("farm")
+}
+
+model FarmField {
+  id          String  @id @default(cuid())
+  farmId      String
+  name        String
+  description String? @db.Text
+  areaHa      Decimal @db.Decimal(10, 4)
+  latitude    Decimal? @db.Decimal(10, 7)
+  longitude   Decimal? @db.Decimal(10, 7)
+  soilType    SoilType
+  isActive    Boolean @default(true)
+  metadata    Json?
+
+  farm          Farm            @relation(fields: [farmId], references: [id], onDelete: Cascade)
+  crops         Crop[]
+  plantings     Planting[]
+  irrigationZones IrrigationZone[]
+  soilSamples   SoilSample[]
+  pestAlerts    PestAlert[]
+  harvestRecords HarvestRecord[]
+  sensorReadings SensorReading[]
+  yieldForecasts YieldForecast[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([farmId])
+  @@schema("farm")
+}
+
+model Document {
+  id        String  @id @default(cuid())
+  farmId    String?
+  userId    String
+  name      String
+  url       String
+  mimeType  String
+  size      Int
+  category  String?
+  metadata  Json?
+
+  farm Farm? @relation(fields: [farmId], references: [id], onDelete: SetNull)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@schema("public")
+}
+
+// ═══════════════════════════════════════════════════════════════
+// CROP MANAGEMENT
+// ═══════════════════════════════════════════════════════════════
+
+model Crop {
+  id              String     @id @default(cuid())
+  farmId          String
+  fieldId         String?
+  varietyId       String?
+  name            String
+  scientificName  String?
+  status          CropStatus @default(PLANNED)
+  season          Season
+  growthStage     GrowthStage @default(DORMANT)
+  plantingDate    DateTime?
+  expectedHarvest DateTime?
+  actualHarvest   DateTime?
+  areaPlantedHa   Decimal?   @db.Decimal(10, 4)
+  seedRate        Decimal?   @db.Decimal(10, 2) // seeds per hectare
+  metadata        Json?
+
+  farm            Farm          @relation(fields: [farmId], references: [id], onDelete: Cascade)
+  field           FarmField?    @relation(fields: [fieldId], references: [id], onDelete: SetNull)
+  variety         CropVariety?  @relation(fields: [varietyId], references: [id], onDelete: SetNull)
+  plantings       Planting[]
+  harvestRecords  HarvestRecord[]
+  yields          Yield[]
+  yieldForecasts  YieldForecast[]
+  pestAlerts      PestAlert[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([farmId])
+  @@index([fieldId])
+  @@index([status])
+  @@index([season])
+  @@schema("farm")
+}
+
+model CropVariety {
+  id           String  @id @default(cuid())
+  name         String
+  scientificName String?
+  cropType     String
+  maturityDays Int?
+  yieldEstimate Decimal? @db.Decimal(10, 2) // kg per hectare
+  diseaseResistance Json?
+  metadata     Json?
+
+  crops Crop[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([cropType])
+  @@schema("farm")
+}
+
+model Planting {
+  id            String   @id @default(cuid())
+  cropId        String
+  batchNumber   String
+  quantity      Int
+  seedSource    String?
+  cost          Decimal? @db.Decimal(10, 2)
+  depthCm       Decimal? @db.Decimal(5, 2)
+  spacingCm     Decimal? @db.Decimal(5, 2)
+  method        String?  // broadcast, row, drill, transplant
+  datePlanted   DateTime @default(now())
+  metadata      Json?
+
+  crop Crop @relation(fields: [cropId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  @@schema("farm")
+}
+
+// ═══════════════════════════════════════════════════════════════
+// IRRIGATION
+// ═══════════════════════════════════════════════════════════════
+
+model Irrigation {
+  id            String         @id @default(cuid())
+  zoneId        String
+  type          IrrigationType @default(DRIP)
+  startDate     DateTime
+  endDate       DateTime?
+  durationMin   Int?
+  volumeLiters  Decimal?       @db.Decimal(12, 2)
+  flowRate      Decimal?       @db.Decimal(8, 2) // liters per minute
+  efficiency    Decimal?       @db.Decimal(5, 2) // percentage
+  automated     Boolean        @default(false)
+  notes         String?        @db.Text
+  metadata      Json?
+
+  zone IrrigationZone @relation(fields: [zoneId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  @@index([zoneId])
+  @@index([startDate])
+  @@schema("farm")
+}
+
+model IrrigationZone {
+  id        String  @id @default(cuid())
+  fieldId   String
+  name      String
+  areaHa    Decimal @db.Decimal(10, 4)
+  isActive  Boolean @default(true)
+  metadata  Json?
+
+  field        FarmField    @relation(fields: [fieldId], references: [id], onDelete: Cascade)
+  irrigations  Irrigation[]
+  sensors      Sensor[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([fieldId])
+  @@schema("farm")
+}
+
+// ═══════════════════════════════════════════════════════════════
+// SOIL MANAGEMENT
+// ═══════════════════════════════════════════════════════════════
+
+model Soil {
+  id           String       @id @default(cuid())
+  fieldId      String
+  type         SoilType
+  ph           Decimal?     @db.Decimal(4, 2)
+  organicMatter Decimal?    @db.Decimal(5, 2) // percentage
+  nitrogen     Decimal?     @db.Decimal(8, 2) // mg/kg
+  phosphorus   Decimal?     @db.Decimal(8, 2)
+  potassium    Decimal?     @db.Decimal(8, 2)
+  calcium      Decimal?     @db.Decimal(8, 2)
+  magnesium    Decimal?     @db.Decimal(8, 2)
+  sulfur       Decimal?     @db.Decimal(8, 2)
+  iron         Decimal?     @db.Decimal(8, 2)
+  moisture     SoilMoistureLevel?
+  temperature  Decimal?     @db.Decimal(5, 2) // celsius
+  conductivity Decimal?     @db.Decimal(8, 4) // dS/m
+  metadata     Json?
+
+  samples SoilSample[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([fieldId])
+  @@schema("farm")
+}
+
+model SoilSample {
+  id          String    @id @default(cuid())
+  farmId      String
+  fieldId     String
+  soilId      String?
+  labName     String?
+  sampleDate  DateTime  @default(now())
+  depthCm     Decimal?  @db.Decimal(5, 2)
+  ph          Decimal?  @db.Decimal(4, 2)
+  organicMatter Decimal? @db.Decimal(5, 2)
+  nitrogen    Decimal?  @db.Decimal(8, 2)
+  phosphorus  Decimal?  @db.Decimal(8, 2)
+  potassium   Decimal?  @db.Decimal(8, 2)
+  cec         Decimal?  @db.Decimal(8, 2) // cation exchange capacity
+  texture     String?   // sand/silt/clay percentages
+  recommendations String? @db.Text
+  reportUrl   String?
+  metadata    Json?
+
+  farm  Farm      @relation(fields: [farmId], references: [id], onDelete: Cascade)
+  field FarmField @relation(fields: [fieldId], references: [id], onDelete: Cascade)
+  soil  Soil?     @relation(fields: [soilId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+  @@index([farmId])
+  @@index([fieldId])
+  @@index([sampleDate])
+  @@schema("farm")
+}
+
+// ═══════════════════════════════════════════════════════════════
+// WEATHER
+// ═══════════════════════════════════════════════════════════════
+
+model Weather {
+  id          String            @id @default(cuid())
+  farmId      String
+  date        DateTime          @db.Date
+  condition   WeatherCondition
+  tempHigh    Decimal?          @db.Decimal(5, 2)
+  tempLow     Decimal?          @db.Decimal(5, 2)
+  tempAvg     Decimal?          @db.Decimal(5, 2)
+  humidity    Decimal?          @db.Decimal(5, 2)
+  rainfall    Decimal?          @db.Decimal(8, 2) // mm
+  windSpeed   Decimal?          @db.Decimal(6, 2) // km/h
+  windDir     String?
+  pressure    Decimal?          @db.Decimal(7, 2) // hPa
+  uvIndex     Decimal?          @db.Decimal(4, 2)
+  visibility  Decimal?          @db.Decimal(6, 2) // km
+  dewPoint    Decimal?          @db.Decimal(5, 2)
+  soilTemp    Decimal?          @db.Decimal(5, 2)
+  soilMoisture Decimal?         @db.Decimal(5, 2)
+  metadata    Json?
+
+  farm Farm @relation(fields: [farmId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@unique([farmId, date])
+  @@index([farmId])
+  @@index([date])
+  @@schema("farm")
+}
+
+model WeatherForecast {
+  id          String            @id @default(cuid())
+  farmId      String
+  forecastDate DateTime         @db.Date
+  targetDate  DateTime          @db.Date
+  condition   WeatherCondition
+  confidence  Decimal?          @db.Decimal(5, 2)
+  tempHigh    Decimal?          @db.Decimal(5, 2)
+  tempLow     Decimal?          @db.Decimal(5, 2)
+  humidity    Decimal?          @db.Decimal(5, 2)
+  rainfall    Decimal?          @db.Decimal(8, 2)
+  windSpeed   Decimal?          @db.Decimal(6, 2)
+  metadata    Json?
+
+  createdAt DateTime @default(now())
+
+  @@index([farmId, targetDate])
+  @@schema("farm")
+}
+
+// ═══════════════════════════════════════════════════════════════
+// PEST MANAGEMENT
+// ═══════════════════════════════════════════════════════════════
+
+model Pest {
+  id            String    @id @default(cuid())
+  name          String
+  scientificName String?
+  category      String    // insect, fungus, weed, rodent, nematode
+  description   String?   @db.Text
+  symptoms      String?   @db.Text
+  treatment     String?   @db.Text
+  prevention    String?   @db.Text
+  imageUrl      String?
+  metadata      Json?
+
+  alerts PestAlert[]
+
+  createdAt DateTime @default(now())
+  @@index([name])
+  @@index([category])
+  @@schema("farm")
+}
+
+model PestAlert {
+  id          String       @id @default(cuid())
+  fieldId     String
+  cropId      String?
+  pestId      String?
+  severity    PestSeverity @default(MODERATE)
+  detectedBy  String?      // manual, sensor, satellite, drone
+  description String?      @db.Text
+  latitude    Decimal?     @db.Decimal(10, 7)
+  longitude   Decimal?     @db.Decimal(10, 7)
+  areaHa      Decimal?     @db.Decimal(10, 4)
+  actionTaken String?      @db.Text
+  resolvedAt  DateTime?
+  resolvedBy  String?
+  imageUrl    String?
+  metadata    Json?
+
+  field FarmField @relation(fields: [fieldId], references: [id], onDelete: Cascade)
+  crop  Crop?     @relation(fields: [cropId], references: [id], onDelete: SetNull)
+  pest  Pest?     @relation(fields: [pestId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([fieldId])
+  @@index([severity])
+  @@index([createdAt])
+  @@schema("farm")
+}
+
+// ═══════════════════════════════════════════════════════════════
+// HARVEST
+// ═══════════════════════════════════════════════════════════════
+
+model Harvest {
+  id          String   @id @default(cuid())
+  farmId      String
+  season      Season
+  year        Int
+  startDate   DateTime
+  endDate     DateTime?
+  notes       String?  @db.Text
+  metadata    Json?
+
+  farm    Farm             @relation(fields: [farmId], references: [id], onDelete: Cascade)
+  records HarvestRecord[]
+
+  createdAt DateTime @default(now())
+  @@index([farmId])
+  @@schema("farm")
+}
+
+model HarvestRecord {
+  id              String   @id @default(cuid())
+  harvestId       String
+  cropId          String
+  fieldId         String
+  yieldKg         Decimal  @db.Decimal(12, 2)
+  qualityGrade    String?  // A, B, C, D
+  moistureContent Decimal? @db.Decimal(5, 2)
+  harvestedAt     DateTime @default(now())
+  laborHours      Decimal? @db.Decimal(6, 2)
+  laborCost       Decimal? @db.Decimal(10, 2)
+  notes           String?  @db.Text
+  metadata        Json?
+
+  harvest Harvest  @relation(fields: [harvestId], references: [id], onDelete: Cascade)
+  crop    Crop     @relation(fields: [cropId], references: [id], onDelete: Cascade)
+  field   FarmField @relation(fields: [fieldId], references: [id], onDelete: Cascade)
+  produce Produce[]
+
+  createdAt DateTime @default(now())
+  @@index([harvestId])
+  @@index([cropId])
+  @@schema("farm")
+}
+
+// ═══════════════════════════════════════════════════════════════
+// EQUIPMENT
+// ═══════════════════════════════════════════════════════════════
+
+model Equipment {
+  id              String          @id @default(cuid())
+  farmId          String
+  name            String
+  type            String          // tractor, harvester, plow, sprayer, etc.
+  brand           String?
+  model           String?
+  serialNumber    String?         @unique
+  year            Int?
+  purchaseDate    DateTime?
+  purchasePrice   Decimal?        @db.Decimal(12, 2)
+  currentValue    Decimal?        @db.Decimal(12, 2)
+  status          EquipmentStatus @default(AVAILABLE)
+  hoursUsed       Decimal?        @db.Decimal(10, 2)
+  fuelType        String?
+  imageUrl        String?
+  metadata        Json?
+
+  farm          Farm                  @relation(fields: [farmId], references: [id], onDelete: Cascade)
+  maintenance   EquipmentMaintenance[]
+  assignments   EquipmentAssignment[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([farmId])
+  @@index([status])
+  @@schema("farm")
+}
+
+model EquipmentMaintenance {
+  id            String   @id @default(cuid())
+  equipmentId   String
+  type          String   // scheduled, unscheduled, inspection
+  description   String   @db.Text
+  cost          Decimal? @db.Decimal(10, 2)
+  performedBy   String?
+  performedAt   DateTime @default(now())
+  nextServiceAt DateTime?
+  hoursAtService Decimal? @db.Decimal(10, 2)
+  partsReplaced String?  @db.Text
+  notes         String?  @db.Text
+  metadata      Json?
+
+  equipment Equipment @relation(fields: [equipmentId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  @@index([equipmentId])
+  @@index([performedAt])
+  @@schema("farm")
+}
+
+model EquipmentAssignment {
+  id          String    @id @default(cuid())
+  equipmentId String
+  userId      String
+  assignedAt  DateTime  @default(now())
+  returnedAt  DateTime?
+  purpose     String?
+
+  equipment Equipment @relation(fields: [equipmentId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  @@schema("farm")
+}
+
+// ═══════════════════════════════════════════════════════════════
+// MARKET & COMMERCE
+// ═══════════════════════════════════════════════════════════════
+
+model Market {
+  id          String       @id @default(cuid())
+  name        String
+  location    String?
+  region      String?
+  country     String       @default("US")
+  currency    String       @default("USD")
+  status      MarketStatus @default(ACTIVE)
+  description String?      @db.Text
+  metadata    Json?
+
+  prices    MarketPrice[]
+  listings  ProduceListing[]
+  contracts Contract[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([region])
+  @@schema("market")
+}
+
+model MarketPrice {
+  id        String   @id @default(cuid())
+  marketId  String
+  cropName  String
+  variety   String?
+  unit      String   @default("kg")
+  price     Decimal  @db.Decimal(10, 2)
+  currency  String   @default("USD")
+  date      DateTime @db.Date
+  highPrice Decimal? @db.Decimal(10, 2)
+  lowPrice  Decimal? @db.Decimal(10, 2)
+  avgPrice  Decimal? @db.Decimal(10, 2)
+  volume    Decimal? @db.Decimal(12, 2)
+  source    String?
+  metadata  Json?
+
+  market Market @relation(fields: [marketId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@unique([marketId, cropName, date])
+  @@index([marketId])
+  @@index([cropName])
+  @@index([date])
+  @@schema("market")
+}
+
+model Produce {
+  id              String   @id @default(cuid())
+  harvestRecordId String
+  name            String
+  quantity        Decimal  @db.Decimal(10, 2)
+  unit            String   @default("kg")
+  qualityGrade    String?
+  pricePerUnit    Decimal? @db.Decimal(10, 2)
+  status          String   @default("available") // available, listed, sold, expired
+  storedAt        String?
+  expiryDate      DateTime?
+  metadata        Json?
+
+  harvestRecord HarvestRecord  @relation(fields: [harvestRecordId], references: [id], onDelete: Cascade)
+  listings      ProduceListing[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([harvestRecordId])
+  @@schema("market")
+}
+
+model ProduceListing {
+  id          String   @id @default(cuid())
+  marketId    String
+  produceId   String
+  sellerId    String
+  title       String
+  description String?  @db.Text
+  quantity    Decimal  @db.Decimal(10, 2)
+  unit        String   @default("kg")
+  pricePerUnit Decimal @db.Decimal(10, 2)
+  currency    String   @default("USD")
+  minOrderQty Decimal? @db.Decimal(10, 2)
+  status      MarketStatus @default(ACTIVE)
+  availableFrom DateTime?
+  availableUntil DateTime?
+  metadata    Json?
+
+  market   Market   @relation(fields: [marketId], references: [id], onDelete: Cascade)
+  produce  Produce  @relation(fields: [produceId], references: [id], onDelete: Cascade)
+  orderItems OrderItem[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([marketId])
+  @@index([sellerId])
+  @@index([status])
+  @@schema("market")
+}
+
+model Buyer {
+  id        String  @id @default(cuid())
+  userId    String  @unique
+  company   String?
+  type      String  // individual, restaurant, retailer, wholesaler, exporter
+  address   String?
+  city      String?
+  state     String?
+  country   String?
+  taxId     String?
+  metadata  Json?
+
+  user   User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  orders Order[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@schema("market")
+}
+
+model Order {
+  id          String      @id @default(cuid())
+  buyerId     String
+  orderNumber String      @unique
+  status      OrderStatus @default(PENDING)
+  totalAmount Decimal     @db.Decimal(12, 2)
+  currency    String      @default("USD")
+  tax         Decimal?    @db.Decimal(10, 2)
+  discount    Decimal?    @db.Decimal(10, 2)
+  shippingCost Decimal?   @db.Decimal(10, 2)
+  shippingAddress String? @db.Text
+  deliveryDate  DateTime?
+  notes       String?     @db.Text
+  metadata    Json?
+
+  buyer Buyer       @relation(fields: [buyerId], references: [id], onDelete: Cascade)
+  items OrderItem[]
+  contract Contract?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([buyerId])
+  @@index([orderNumber])
+  @@index([status])
+  @@schema("market")
+}
+
+model OrderItem {
+  id              String   @id @default(cuid())
+  orderId         String
+  listingId       String
+  quantity        Decimal  @db.Decimal(10, 2)
+  unit            String   @default("kg")
+  pricePerUnit    Decimal  @db.Decimal(10, 2)
+  totalPrice      Decimal  @db.Decimal(12, 2)
+  notes           String?  @db.Text
+
+  order   Order           @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  listing ProduceListing @relation(fields: [listingId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  @@index([orderId])
+  @@schema("market")
+}
+
+model Contract {
+  id            String         @id @default(cuid())
+  farmId        String
+  marketId      String
+  buyerId       String?
+  contractNumber String        @unique
+  status        ContractStatus @default(DRAFT)
+  title         String
+  description   String?        @db.Text
+  totalValue    Decimal        @db.Decimal(12, 2)
+  currency      String         @default("USD")
+  startDate     DateTime
+  endDate       DateTime
+  terms         String?        @db.Text
+  signedAt      DateTime?
+  metadata      Json?
+
+  farm   Farm   @relation(fields: [farmId], references: [id], onDelete: Cascade)
+  market Market @relation(fields: [marketId], references: [id], onDelete: Cascade)
+  order  Order?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([farmId])
+  @@index([contractNumber])
+  @@index([status])
+  @@schema("market")
+}
+
+// ═══════════════════════════════════════════════════════════════
+// YIELD
+// ═══════════════════════════════════════════════════════════════
+
+model Yield {
+  id         String   @id @default(cuid())
+  cropId     String
+  season     Season
+  year       Int
+  actualKg   Decimal  @db.Decimal(12, 2)
+  expectedKg Decimal? @db.Decimal(12, 2)
+  variance   Decimal? @db.Decimal(10, 2)
+  notes      String?  @db.Text
+  metadata   Json?
+
+  crop Crop @relation(fields: [cropId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@unique([cropId, season, year])
+  @@index([cropId])
+  @@schema("farm")
+}
+
+model YieldForecast {
+  id            String   @id @default(cuid())
+  farmId        String
+  cropId        String?
+  fieldId       String?
+  forecastDate  DateTime @db.Date
+  predictedYield Decimal @db.Decimal(12, 2)
+  confidence    Decimal  @db.Decimal(5, 2)
+  modelVersion  String?
+  factors       Json?   // weather, soil, irrigation impact factors
+  metadata      Json?
+
+  farm  Farm      @relation(fields: [farmId], references: [id], onDelete: Cascade)
+  crop  Crop?     @relation(fields: [cropId], references: [id], onDelete: SetNull)
+  field FarmField? @relation(fields: [fieldId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+
+  @@index([farmId])
+  @@index([cropId])
+  @@schema("analytics")
+}
+
+// ═══════════════════════════════════════════════════════════════
+// SATELLITE & DRONE
+// ═══════════════════════════════════════════════════════════════
+
+model Satellite {
+  id          String  @id @default(cuid())
+  name        String
+  provider    String  // sentinel, landsat, modis, etc.
+  orbitType   String?
+  resolution  String? // meters
+  revisitDays Int?
+  metadata    Json?
+
+  images SatelliteImage[]
+
+  createdAt DateTime @default(now())
+  @@schema("analytics")
+}
+
+model SatelliteImage {
+  id           String   @id @default(cuid())
+  farmId       String
+  satelliteId  String
+  capturedAt   DateTime
+  imageUrl     String
+  thumbnailUrl String?
+  ndviValue    Decimal? @db.Decimal(5, 3) // vegetation index
+  ndwiValue    Decimal? @db.Decimal(5, 3) // water index
+  cloudCover   Decimal? @db.Decimal(5, 2)
+  resolution   String?
+  bands        Json?    // available spectral bands
+  analysis     Json?    // AI analysis results
+  metadata     Json?
+
+  farm      Farm      @relation(fields: [farmId], references: [id], onDelete: Cascade)
+  satellite Satellite @relation(fields: [satelliteId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@index([farmId])
+  @@index([capturedAt])
+  @@schema("analytics")
+}
+
+model Drone {
+  id          String  @id @default(cuid())
+  farmId      String
+  name        String
+  model       String?
+  serialNumber String? @unique
+  batteryType String?
+  maxFlightMin Int?
+  maxRange    Decimal? @db.Decimal(6, 2) // km
+  sensors     Json?   // camera, multispectral, thermal
+  isActive    Boolean @default(true)
+  metadata    Json?
+
+  farm   Farm         @relation(fields: [farmId], references: [id], onDelete: Cascade)
+  flights DroneFlight[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([farmId])
+  @@schema("analytics")
+}
+
+model DroneFlight {
+  id          String    @id @default(cuid())
+  droneId     String
+  farmId      String
+  fieldId     String?
+  pilotName   String?
+  startTime   DateTime
+  endTime     DateTime?
+  durationMin Int?
+  distanceKm  Decimal?  @db.Decimal(6, 2)
+  altitude    Decimal?  @db.Decimal(6, 2) // meters
+  areaCovered Decimal?  @db.Decimal(10, 4) // hectares
+  images      Json?     // array of image URLs
+  analysis    Json?     // AI analysis results
+  notes       String?   @db.Text
+  metadata    Json?
+
+  drone  Drone      @relation(fields: [droneId], references: [id], onDelete: Cascade)
+  farm   Farm       @relation(fields: [farmId], references: [id], onDelete: Cascade)
+  field  FarmField? @relation(fields: [fieldId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+
+  @@index([droneId])
+  @@index([farmId])
+  @@index([startTime])
+  @@schema("analytics")
+}
+
+// ═══════════════════════════════════════════════════════════════
+// IOT SENSORS
+// ═══════════════════════════════════════════════════════════════
+
+model Sensor {
+  id            String  @id @default(cuid())
+  farmId        String
+  zoneId        String?
+  name          String
+  type          String  // temperature, humidity, soil_moisture, ph, light, rain, wind
+  model         String?
+  serialNumber  String? @unique
+  latitude      Decimal? @db.Decimal(10, 7)
+  longitude     Decimal? @db.Decimal(10, 7)
+  batteryLevel  Decimal? @db.Decimal(5, 2)
+  isActive      Boolean @default(true)
+  lastPingAt    DateTime?
+  metadata      Json?
+
+  farm   Farm            @relation(fields: [farmId], references: [id], onDelete: Cascade)
+  zone   IrrigationZone? @relation(fields: [zoneId], references: [id], onDelete: SetNull)
+  readings SensorReading[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([farmId])
+  @@index([type])
+  @@schema("analytics")
+}
+
+model SensorReading {
+  id        String   @id @default(cuid())
+  sensorId  String
+  fieldId   String?
+  timestamp DateTime @default(now())
+  value     Decimal  @db.Decimal(12, 4)
+  unit      String
+  quality   Decimal? @db.Decimal(5, 2) // 0-100 quality score
+  anomaly   Boolean  @default(false)
+  metadata  Json?
+
+  sensor Sensor     @relation(fields: [sensorId], references: [id], onDelete: Cascade)
+  field  FarmField? @relation(fields: [fieldId], references: [id], onDelete: SetNull)
+
+  @@index([sensorId])
+  @@index([timestamp])
+  @@index([sensorId, timestamp])
+  @@schema("analytics")
+}
+
+// ═══════════════════════════════════════════════════════════════
+// FINANCIAL
+// ═══════════════════════════════════════════════════════════════
+
+model Financial {
+  id         String   @id @default(cuid())
+  farmId     String
+  type       String   // revenue, expense, investment, loan
+  category   String   // seeds, fertilizer, labor, equipment, irrigation, sales, etc.
+  amount     Decimal  @db.Decimal(12, 2)
+  currency   String   @default("USD")
+  date       DateTime @db.Date
+  description String? @db.Text
+  reference  String?  // invoice number, transaction id
+  receiptUrl String?
+  metadata   Json?
+
+  farm Farm @relation(fields: [farmId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([farmId])
+  @@index([type])
+  @@index([category])
+  @@index([date])
+  @@schema("farm")
+}
+
+model Transaction {
+  id           String   @id @default(cuid())
+  farmId       String
+  orderId      String?
+  type         String   // payment, refund, transfer, withdrawal
+  amount       Decimal  @db.Decimal(12, 2)
+  currency     String   @default("USD")
+  status       String   @default("pending") // pending, completed, failed
+  paymentMethod String?
+  reference    String?
+  description  String?  @db.Text
+  metadata     Json?
+
+  farm Farm   @relation(fields: [farmId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([farmId])
+  @@index([orderId])
+  @@index([status])
+  @@schema("market")
+}
+
+// ═══════════════════════════════════════════════════════════════
+// NOTIFICATIONS & AUDIT
+// ═══════════════════════════════════════════════════════════════
+
+model Notification {
+  id        String           @id @default(cuid())
+  userId    String
+  type      NotificationType
+  title     String
+  message   String           @db.Text
+  read      Boolean          @default(false)
+  readAt    DateTime?
+  actionUrl String?
+  metadata  Json?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([userId, read])
+  @@index([type])
+  @@schema("public")
+}
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  userId    String?
+  action    String   // create, update, delete, login, logout, export
+  resource  String   // farm, crop, equipment, etc.
+  resourceId String?
+  oldValues Json?
+  newValues Json?
+  ipAddress String?
+  userAgent String?
+  metadata  Json?
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([resource, resourceId])
+  @@index([action])
+  @@index([createdAt])
+  @@schema("audit")
+}
